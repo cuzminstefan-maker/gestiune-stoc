@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#007bff">
+    <title>Gestiune Produse Offline</title>
+    
+    <link rel="manifest" href="manifest.json">
+
+    <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        :root {
+            --primary: #007bff;
+            --success: #28a745;
+            --danger: #dc3545;
+            --warning: #ffc107;
+        }
+
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background: #f0f2f5; 
+            color: #333;
+        }
+
+        .container { 
+            max-width: 1000px; 
+            margin: auto; 
+            background: white; 
+            padding: 25px; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+        }
+
+        h2 { color: var(--primary); border-bottom: 2px solid #eee; padding-bottom: 10px; }
+
+        .controls { 
+            display: flex; 
+            gap: 10px; 
+            flex-wrap: wrap; 
+            margin-bottom: 25px; 
+            padding: 15px; 
+            background: #f8f9fa; 
+            border-radius: 8px;
+        }
+
+        button { 
+            padding: 10px 20px; 
+            border: none; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-weight: bold; 
+            transition: 0.3s;
+        }
+
+        .btn-import { background: var(--primary); color: white; }
+        .btn-export { background: var(--success); color: white; }
+        button:hover { opacity: 0.8; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px; border: 1px solid #dee2e6; text-align: left; }
+        th { background: #f1f1f1; font-weight: 600; }
+
+        /* Stiluri pentru Status Expirare */
+        .status-expirat { background-color: #f8d7da !important; color: #721c24; }
+        .status-atentie { background-color: #fff3cd !important; color: #856404; }
+
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            text-transform: uppercase;
+            margin-left: 8px;
+            display: inline-block;
+        }
+
+        input[type="number"], input[type="date"] {
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .delete-btn { color: var(--danger); background: none; border: 1px solid var(--danger); padding: 5px 10px; }
+        .delete-btn:hover { background: var(--danger); color: white; }
+
+        @media (max-width: 600px) {
+            th:nth-child(2), td:nth-child(2) { display: none; } /* Ascunde coloana 2 pe ecrane mici dacă e nevoie */
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>📦 Gestiune Stoc Offline</h2>
+    
+    <div class="controls">
+        <div>
+            <label><strong>1. Importă Excel:</strong></label><br>
+            <input type="file" id="fileInput" accept=".xlsx, .xls" style="margin-top:5px;"/>
+        </div>
+        <div style="align-self: flex-end;">
+            <button class="btn-export" onclick="exportaExcel()">📥 Descarcă Raport Excel</button>
+        </div>
+    </div>
+
+    <div id="loadingStatus"></div>
+
+    <table id="tabelProduse">
+        <thead>
+            <tr>
+                <th>Produs / Status</th>
+                <th>Cantitate</th>
+                <th>Data Expirare</th>
+                <th>Acțiuni</th>
+            </tr>
+        </thead>
+        <tbody id="listaCorp"></tbody>
+    </table>
+</div>
+
+<script>
+    // === 1. CONFIGURARE BAZĂ DE DATE (Dexie.js) ===
+    const db = new Dexie("GestiuneProduseDB");
+    db.version(1).stores({
+        produse: '++id, nume, cantitate, dataExpirare'
+    });
+
+    const fileInput = document.getElementById('fileInput');
+    const listaCorp = document.getElementById('listaCorp');
+
+    // === 2. IMPORT DATE DIN EXCEL ===
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+
+        reader.onload = async (event) => {
+            const data = new Uint8Array(event.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+            const json = XLSX.utils.sheet_to_json(firstSheet);
+
+            document.getElementById('loadingStatus').innerText = "Se importă...";
+
+            for (let item of json) {
+                await db.produse.add({
+                    nume: item.Nume || item.Produs || item.Denumire || "Produs Nou",
+                    cantitate: item.Cantitate || 0,
+                    dataExpirare: item.DataExpirare || item.Expirare || ""
+                });
+            }
+            
+            document.getElementById('loadingStatus').innerText = "Import finalizat!";
+            afiseazaProduse();
+            fileInput.value = ""; // reset input
+        };
+        reader.readAsArrayBuffer(file);
+    });
+
+    // === 3. AFIȘARE ȘI LOGICĂ ALERTE ===
+    async function afiseazaProduse() {
+        const toateProdusele = await db.produse.toArray();
+        listaCorp.innerHTML = "";
+
+        const azi = new Date();
+        const peste30Zile = new Date();
+        peste30Zile.setDate(azi.getDate() + 30);
+
+        toateProdusele.forEach(p => {
+            const tr = document.createElement('tr');
+            let clasaStatus = "";
+            let badgeHtml = "";
+
+            if (p.dataExpirare) {
+                const dataExp = new Date(p.dataExpirare);
+                if (dataExp < azi) {
+                    clasaStatus = "status-expirat";
+                    badgeHtml = "<span class='badge' style='background: #dc3545; color: white;'>EXPIRAT</span>";
+                } else if (dataExp <= peste30Zile) {
+                    clasaStatus = "status-atentie";
+                    badgeHtml = "<span class='badge' style='background: #ffc107; color: #333;'>EXPIRĂ CURÂND</span>";
+                }
+            }
+
+            tr.className = clasaStatus;
+            tr.innerHTML = `
+                <td><strong>${p.nume}</strong>${badgeHtml}</td>
+                <td><input type="number" value="${p.cantitate}" onchange="updateCamp(${p.id}, 'cantitate', this.value)"></td>
+                <td><input type="date" value="${p.dataExpirare}" onchange="updateCamp(${p.id}, 'dataExpirare', this.value)"></td>
+                <td><button class="delete-btn" onclick="stergeProdus(${p.id})">Șterge</button></td>
+            `;
+            listaCorp.appendChild(tr);
+        });
+    }
+
+    // === 4. ACTUALIZARE ȘI ȘTERGERE ===
+    async function updateCamp(id, camp, valoare) {
+        let updateData = {};
+        updateData[camp] = (camp === 'cantitate') ? parseInt(valoare) : valoare;
+        await db.produse.update(id, updateData);
+        afiseazaProduse(); // Refresh pentru a actualiza culorile dacă s-a schimbat data
+    }
+
+    async function stergeProdus(id) {
+        if(confirm("Sigur ștergi acest produs?")) {
+            await db.produse.delete(id);
+            afiseazaProduse();
+        }
+    }
+
+    // === 5. EXPORT EXCEL ===
+    async function exportaExcel() {
+        const date = await db.produse.toArray();
+        if (date.length === 0) return alert("Nu există date!");
+
+        const dateExport = date.map(({id, ...rest}) => rest);
+        const worksheet = XLSX.utils.json_to_sheet(dateExport);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Stoc_Actualizat");
+        XLSX.writeFile(workbook, "Gestiune_Stoc_Offline.xlsx");
+    }
+
+    // Pornire aplicație
+    afiseazaProduse();
+</script>
+
+</body>
+</html>
+
