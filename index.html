@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Stoc Farma v10.34 - FINAL 10K</title>
+    
+    <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        :root { --primary: #0f172a; --accent: #2563eb; --bg: #f1f5f9; --inv: #4f46e5; --danger: #dc2626; --success: #10b981; --undo: #fef9c3; }
+        body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+        
+        .top-bar { background: var(--primary); color: white; padding: 12px; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; z-index: 100; }
+        .top-bar.mod-inv { background: var(--inv); }
+        
+        .controls { padding: 10px; background: var(--bg); flex-shrink: 0; border-bottom: 1px solid #cbd5e1; z-index: 90; }
+        .btn-group { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+        .btn { padding: 10px 14px; border-radius: 8px; font-weight: bold; border: 1px solid #cbd5e1; background: white; font-size: 11px; white-space: nowrap; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+        .btn-blue { background: var(--accent); color: white; border: none; }
+        .btn-undo { background: var(--undo); color: #854d0e; border: 1px solid #facc15; display: none; }
+        
+        .search { width: 100%; padding: 12px; border: 2px solid #cbd5e1; border-radius: 10px; font-size: 16px; outline: none; }
+        
+        /* MOTOR VIRTUALIZARE */
+        #viewport { flex-grow: 1; overflow-y: auto; background: white; position: relative; -webkit-overflow-scrolling: touch; }
+        #spacer { width: 100%; pointer-events: none; }
+        #visibleRows { position: absolute; top: 0; left: 0; right: 0; }
+
+        .row-item { 
+            position: absolute; left: 0; right: 0; height: 85px; 
+            border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; 
+            padding: 0 12px; background: white; gap: 10px;
+        }
+
+        .prod-info { flex: 1; min-width: 0; }
+        .prod-name { font-weight: 700; font-size: 14px; color: var(--primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+        .prod-sub { font-size: 11px; color: #64748b; }
+
+        .qty-group { display: flex; align-items: center; gap: 4px; }
+        .qty { width: 52px; text-align: center; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 8px 0; font-weight: 700; font-size: 15px; }
+        
+        .diff-tag { font-size: 10px; font-weight: 800; padding: 4px 6px; border-radius: 5px; min-width: 50px; text-align: center; }
+        .minus { background: #fee2e2; color: var(--danger); }
+        .plus { background: #dcfce7; color: var(--success); }
+    </style>
+</head>
+<body>
+
+<div class="top-bar" id="mainBar">
+    <h1 style="font-size: 15px; margin:0">FARMA v10.34</h1>
+    <button class="btn" onclick="toggleMode()" id="modeBtn">MOD INVENTAR</button>
+</div>
+
+<div class="controls">
+    <div class="btn-group">
+        <div id="normalBtns" style="display:contents">
+            <button class="btn btn-blue" onclick="addProd()">+ NOU</button>
+            <button class="btn" onclick="exportExcel('Stoc')">📊 EXCEL</button>
+            <button class="btn" onclick="exportPDF('STOC')">📄 PDF</button>
+            <button class="btn" onclick="document.getElementById('fileXls').click()">📥 IMPORT</button>
+            <button class="btn" onclick="doBackup()">💾 BK</button>
+        </div>
+        <div id="invBtns" style="display:none">
+            <button class="btn btn-blue" onclick="finalizeazaInventar()">✅ SALVEAZĂ</button>
+            <button class="btn" onclick="exportExcel('Diferente')">📊 EXCEL DIF</button>
+            <button class="btn" onclick="exportPDF('DIFERENTE')">📄 PDF DIF</button>
+            <button class="btn" style="color:red" onclick="resetTotalStoc()">⚠️ RESET SISTEM</button>
+        </div>
+        <button class="btn btn-undo" id="undoBtn" onclick="applyUndo()">↩ ÎNAPOI</button>
+    </div>
+    <input type="text" id="search" class="search" placeholder="Căutare rapidă în 10.000+ produse...">
+</div>
+
+<div id="viewport">
+    <div id="spacer"></div>
+    <div id="visibleRows"></div>
+</div>
+
+<input type="file" id="fileXls" style="display:none" accept=".xlsx,.xls" onchange="importExcel(event)">
+<input type="file" id="fileJson" style="display:none" accept=".json" onchange="restoreBackup(event)">
+
+<script>
+    const db = new Dexie("FarmaPro_Final_v34");
+    db.version(1).stores({ produse: '++id, nume, cantitateInt, cantitateFrac, ambalaj, dataExpirare, fapticInt, fapticFrac, ordine' });
+
+    let fullData = [], isInventory = false, undoAction = null, searchTimer = null;
+    const viewport = document.getElementById('viewport'), spacer = document.getElementById('spacer'), visibleRows = document.getElementById('visibleRows');
+    const rowHeight = 85, itemsPerView = 15;
+
+    async function loadData() {
+        const q = document.getElementById('search').value.toLowerCase();
+        let data = await db.produse.toArray();
+        if (q) data = data.filter(p => p.nume.toLowerCase().includes(q));
+        data.sort((a,b) => b.ordine - a.ordine);
+        fullData = data;
+        spacer.style.height = (fullData.length * rowHeight) + 'px';
+        render();
+    }
+
+    async function trackUndo(id, type) {
+        const p = await db.produse.get(id);
+        undoAction = { type, data: JSON.parse(JSON.stringify(p)) };
+        document.getElementById('undoBtn').style.display = 'flex';
+    }
+
+    async function applyUndo() {
+        if (!undoAction) return;
+        if (undoAction.type === 'edit') await db.produse.put(undoAction.data);
+        else if (undoAction.type === 'delete') { delete undoAction.data.id; await db.produse.add(undoAction.data); }
+        undoAction = null; document.getElementById('undoBtn').style.display = 'none';
+        loadData();
+    }
+
+    async function upd(id, f, v) {
+        const old = await db.produse.get(id);
+        const val = (f==='nume'||f==='dataExpirare') ? v : parseInt(v)||0;
+        if(old[f] !== val) {
+            await trackUndo(id, 'edit');
+            await db.produse.update(id, {[f]: val});
+            const idx = fullData.findIndex(x => x.id === id);
+            if(idx !== -1) { fullData[idx][f] = val; if(isInventory) render(); }
+        }
+    }
+
+    function render() {
+        const start = Math.max(0, Math.floor(viewport.scrollTop / rowHeight) - 2);
+        const end = Math.min(fullData.length, start + itemsPerView + 5);
+        let html = "";
+
+        for (let i = start; i < end; i++) {
+            const p = fullData[i], top = i * rowHeight;
+            if (!isInventory) {
+                html += `<div class="row-item" style="top:${top}px">
+                    <button class="btn" style="padding:6px" onclick="duplicaProd(${p.id})">+</button>
+                    <div class="prod-info">
+                        <input class="prod-name" style="border:none; background:transparent; outline:none; width:100%" value="${p.nume}" onchange="upd(${p.id},'nume',this.value)">
+                        <span class="prod-sub">Emb: ${p.ambalaj} | Exp: ${p.dataExpirare}</span>
+                    </div>
+                    <div class="qty-group">
+                        <input type="number" class="qty" value="${p.cantitateInt}" onchange="upd(${p.id},'cantitateInt',this.value)">
+                        <input type="number" class="qty" style="color:var(--accent)" value="${p.cantitateFrac}" onchange="upd(${p.id},'cantitateFrac',this.value)">
+                    </div>
+                    <button style="border:none; background:none" onclick="del(${p.id})">🗑️</button>
+                </div>`;
+            } else {
+                const sistTot = (p.cantitateInt * p.ambalaj) + p.cantitateFrac;
+                const fapTot = ((p.fapticInt || 0) * p.ambalaj) + (p.fapticFrac || 0);
+                const d = fapTot - sistTot;
+                const dStr = d === 0 ? "0" : (d > 0 ? "+" : "-") + Math.floor(Math.abs(d)/p.ambalaj) + "+" + (Math.abs(d)%p.ambalaj);
+                html += `<div class="row-item" style="top:${top}px">
+                    <div class="prod-info">
+                        <span class="prod-name">${p.nume}</span>
+                        <span class="prod-sub">Sist: ${p.cantitateInt}+${p.cantitateFrac} | Exp: ${p.dataExpirare}</span>
+                    </div>
+                    <div class="qty-group">
+                        <input type="number" class="qty" style="border-color:var(--inv)" value="${p.fapticInt||0}" onchange="upd(${p.id},'fapticInt',this.value)">
+                        <input type="number" class="qty" style="border-color:var(--inv);color:blue" value="${p.fapticFrac||0}" onchange="upd(${p.id},'fapticFrac',this.value)">
+                    </div>
+                    <span class="diff-tag ${d<0?'minus':(d>0?'plus':'')}">${dStr}</span>
+                </div>`;
+            }
+        }
+        visibleRows.innerHTML = html;
+    }
+
+    function toggleMode() { isInventory = !isInventory; document.getElementById('normalBtns').style.display = isInventory ? 'none' : 'contents'; document.getElementById('invBtns').style.display = isInventory ? 'contents' : 'none'; document.getElementById('mainBar').className = isInventory ? 'top-bar mod-inv' : 'top-bar'; viewport.scrollTop = 0; loadData(); }
+    async function addProd() { await db.produse.add({ nume: "Produs Nou", cantitateInt: 0, cantitateFrac: 0, ambalaj: 10, dataExpirare: "", fapticInt: 0, fapticFrac: 0, ordine: Date.now() }); loadData(); }
+    async function del(id) { if(confirm("Ștergi?")) { await trackUndo(id, 'delete'); await db.produse.delete(id); loadData(); } }
+    async function duplicaProd(id) { const p = await db.produse.get(id); const n = {...p}; delete n.id; n.ordine = Date.now(); await db.produse.add(n); loadData(); }
+    async function resetTotalStoc() { if(confirm("Reset sistem?")) { const d = await db.produse.toArray(); for(let p of d) await db.produse.update(p.id, { cantitateInt: 0, cantitateFrac: 0 }); loadData(); } }
+    async function finalizeazaInventar() { if(confirm("Salvezi?")) { const d = await db.produse.toArray(); for(let p of d) await db.produse.update(p.id, { cantitateInt: p.fapticInt||0, cantitateFrac: p.fapticFrac||0, fapticInt:0, fapticFrac:0 }); toggleMode(); } }
+
+    async function exportExcel(n) { const d = await db.produse.toArray(); const ws = XLSX.utils.json_to_sheet(d.map(p => ({ "Produs": p.nume, "Stoc": `${p.cantitateInt}+${p.cantitateFrac}`, "Exp": p.dataExpirare }))); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Stoc"); XLSX.writeFile(wb, `${n}.xlsx`); }
+    async function exportPDF(t) { const { jsPDF } = window.jspdf; const doc = new jsPDF(); const d = await db.produse.toArray(); doc.autoTable({ head: [['Produs', 'Stoc', 'Exp']], body: d.map(p => [p.nume, `${p.cantitateInt}+${p.cantitateFrac}`, p.dataExpirare]) }); doc.save(`${t}.pdf`); }
+    async function importExcel(e) { const r = new FileReader(); r.onload = async (ev) => { const wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'}); const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]); await db.produse.clear(); const batch = json.map(row => { const k = Object.keys(row); const f = (l) => row[k.find(x => l.some(w => x.toLowerCase().includes(w)))] || ""; let s = String(f(['stoc','cant']) || "0"), qi = 0, qf = 0; if(s.includes('+')) [qi,qf] = s.split('+').map(n => parseInt(n)||0); else qi = parseInt(s)||0; return { nume: String(f(['nume','prod']) || "Produs"), cantitateInt: qi, cantitateFrac: qf, ambalaj: 10, dataExpirare: "", fapticInt: 0, fapticFrac: 0, ordine: Date.now() }; }); await db.produse.bulkAdd(batch); loadData(); }; r.readAsArrayBuffer(e.target.files[0]); }
+    function doBackup() { db.produse.toArray().then(d => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(d)], {type:'application/json'})); a.download="Backup.json"; a.click(); }); }
+    async function restoreBackup(e) { const r = new FileReader(); r.onload = async (ev) => { const data = JSON.parse(ev.target.result); await db.produse.clear(); await db.produse.bulkAdd(data); loadData(); }; r.readAsText(e.target.files[0]); }
+
+    viewport.addEventListener('scroll', render);
+    document.getElementById('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadData, 400); });
+    loadData();
+</script>
+</body>
+</html>
+
