@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <title>Stoc Farma Pro v10.32 - Export Prioritar</title>
+    
+    <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        :root { 
+            --primary: #0f172a; --accent: #2563eb; --bg: #f1f5f9; --border: #cbd5e1;
+            --inv-color: #4f46e5; --danger: #dc2626; --success: #10b981; --undo: #fef9c3;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--primary); overflow-x: hidden; }
+        .top-bar { background: var(--primary); color: white; padding: 12px 15px; position: sticky; top: 0; z-index: 100; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+        .top-bar.mod-inv { background: var(--inv-color); }
+        .container { padding: 10px; max-width: 100%; margin: 0 auto; }
+        .btn-group { display: flex; gap: 8px; overflow-x: auto; padding: 5px 0 15px 0; scrollbar-width: none; }
+        .btn { padding: 12px 18px; border-radius: 10px; font-weight: bold; border: 1px solid var(--border); background: white; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+        .btn-blue { background: var(--accent); color: white; border: none; }
+        .btn-inv { background: var(--inv-color); color: white; border: none; }
+        .btn-undo { background: var(--undo); color: #854d0e; border: 1px solid #facc15; display: none; }
+        .search { width: 100%; padding: 15px; border: 2px solid var(--border); border-radius: 14px; font-size: 16px; margin-bottom: 12px; outline: none; background: white; }
+        .card { background: white; border-radius: 15px; overflow: hidden; border: 1px solid var(--border); }
+        .scroll-table { overflow-x: auto; width: 100%; -webkit-overflow-scrolling: touch; }
+        table { width: 100%; border-collapse: collapse; min-width: 950px; }
+        tr { content-visibility: auto; contain-intrinsic-size: 1px 65px; }
+        th { background: #f8fafc; padding: 14px; text-align: left; font-size: 11px; text-transform: uppercase; color: #64748b; border-bottom: 2px solid #e2e8f0; cursor: pointer; position: sticky; top: 0; z-index: 10; }
+        td { padding: 10px; border-bottom: 1px solid #f1f5f9; }
+        input.edit { width: 100%; padding: 8px; border: 1px solid transparent; background: transparent; font-size: 14px; border-radius: 5px; font-weight: 500; outline: none; }
+        .qty { width: 60px; text-align: center; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 8px 2px; font-weight: bold; font-size: 15px; }
+        .diff-tag { font-size: 11px; font-weight: 800; padding: 5px 10px; border-radius: 7px; white-space: nowrap; }
+        .plus { background: #dcfce7; color: var(--success); }
+        .minus { background: #fee2e2; color: var(--danger); }
+    </style>
+</head>
+<body>
+
+<div class="top-bar" id="mainBar">
+    <h1 style="font-size: 15px; margin: 0;">FARMA PRO v10.32</h1>
+    <button class="btn" onclick="toggleMode()" id="modeBtn">🔄 MOD INVENTAR</button>
+</div>
+
+<div class="container">
+    <div class="btn-group">
+        <div id="normalBtns" style="display:contents">
+            <button class="btn btn-blue" onclick="addProd()">+ NOU</button>
+            <button class="btn" onclick="exportExcel('Stoc_Total')">📊 EXCEL</button>
+            <button class="btn" style="background:#6366f1; color:white; border:none;" onclick="exportPDF('RAPORT STOC')">📄 PDF</button>
+            <button class="btn" onclick="document.getElementById('fileXls').click()">📥 IMPORT</button>
+            <button class="btn" onclick="doBackup()">💾 BK</button>
+            <button class="btn" onclick="document.getElementById('fileJson').click()">🔄 RS</button>
+        </div>
+        <div id="invBtns" style="display:none">
+            <button class="btn btn-blue" onclick="finalizeazaInventar()">✅ SALVEAZĂ</button>
+            <button class="btn" onclick="exportExcel('Diferente_Inventar')">📊 EXCEL DIF</button>
+            <button class="btn" style="background:#6366f1; color:white; border:none;" onclick="exportPDF('DIFERENTE INVENTAR')">📄 PDF DIF</button>
+            <button class="btn" style="color:var(--danger)" onclick="reseteazaFaptic()">🗑️ RAFT 0</button>
+            <button class="btn" style="color:var(--danger)" onclick="resetTotalStoc()">⚠️ SISTEM 0</button>
+        </div>
+        <button class="btn btn-undo" id="undoBtn" onclick="applyUndo()">↩ ÎNAPOI</button>
+        
+        <input type="file" id="fileXls" style="display:none" accept=".xlsx,.xls" onchange="importExcel(event)">
+        <input type="file" id="fileJson" style="display:none" accept=".json" onchange="restoreBackup(event)">
+    </div>
+
+    <input type="text" id="search" class="search" placeholder="🔎 Caută produs...">
+
+    <div class="card">
+        <div class="scroll-table">
+            <table>
+                <thead><tr id="tHead"></tr></thead>
+                <tbody id="tBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    const db = new Dexie("FarmaPro_v10_32");
+    db.version(1).stores({ produse: '++id, nume, cantitateInt, cantitateFrac, ambalaj, dataExpirare, fapticInt, fapticFrac, ordine' });
+
+    let isInventory = false, sortKey = 'ordine', sortDir = 'desc', undoAction = null, searchTimer = null;
+
+    document.getElementById('search').addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(render, 300);
+    });
+
+    async function upd(id, f, v) {
+        const oldState = await db.produse.get(id);
+        const val = (f === 'nume' || f === 'dataExpirare') ? v : parseInt(v) || 0;
+        if (oldState[f] !== val) {
+            undoAction = { type: 'update', data: {...oldState} };
+            document.getElementById('undoBtn').style.display = 'flex';
+            await db.produse.update(id, {[f]: val});
+            if(isInventory && f !== 'dataExpirare') render();
+        }
+    }
+
+    async function applyUndo() {
+        if (!undoAction) return;
+        if (undoAction.type === 'update') await db.produse.put(undoAction.data);
+        else if (undoAction.type === 'delete') { delete undoAction.data.id; await db.produse.add(undoAction.data); }
+        undoAction = null; document.getElementById('undoBtn').style.display = 'none';
+        render();
+    }
+
+    function setSort(k) { sortDir = (sortKey === k && sortDir === 'asc') ? 'desc' : 'asc'; sortKey = k; render(); }
+    function formatDate(el, id) { let v = el.value.replace(/\D/g, '').slice(0,8); if (v.length > 2) v = v.slice(0, 2) + '/' + v.slice(2); if (v.length > 5) v = v.slice(0, 5) + '/' + v.slice(5, 9); el.value = v; upd(id, 'dataExpirare', v); }
+    function toggleMode() { isInventory = !isInventory; document.getElementById('mainBar').className = isInventory ? 'top-bar mod-inv' : 'top-bar'; document.getElementById('normalBtns').style.display = isInventory ? 'none' : 'contents'; document.getElementById('invBtns').style.display = isInventory ? 'contents' : 'none'; render(); }
+
+    async function render() {
+        const tbody = document.getElementById('tBody'), thead = document.getElementById('tHead');
+        const q = document.getElementById('search').value.toLowerCase();
+        let data = await db.produse.toArray();
+        if (q) data = data.filter(p => p.nume.toLowerCase().includes(q));
+        
+        data.sort((a, b) => {
+            let vA = a[sortKey], vB = b[sortKey];
+            if(sortKey === 'stoc') {
+                vA = (a.cantitateInt * a.ambalaj) + a.cantitateFrac;
+                vB = (b.cantitateInt * b.ambalaj) + b.cantitateFrac;
+            }
+            return sortDir === 'asc' ? (vA > vB ? 1 : -1) : (vA < vB ? 1 : -1);
+        });
+
+        const icon = (k) => sortKey === k ? (sortDir === 'asc' ? ' 🔼' : ' 🔽') : '';
+        thead.innerHTML = isInventory ? 
+            `<th onclick="setSort('nume')">Produs${icon('nume')}</th><th style="text-align:center">Sistem</th><th style="text-align:center">Raft (I+F)</th><th style="text-align:center">Diferență</th><th>Expira</th>` :
+            `<th style="width:45px">+</th><th onclick="setSort('nume')">Produs${icon('nume')}</th><th style="width:70px">Emb</th><th onclick="setSort('stoc')" style="text-align:center">Stoc (I+F)${icon('stoc')}</th><th>Expira</th><th>Șterge</th>`;
+
+        const frag = document.createDocumentFragment();
+        data.forEach(p => {
+            const tr = document.createElement('tr');
+            if (!isInventory) {
+                tr.innerHTML = `<td><button class="btn" style="padding:5px 10px" onclick="duplicaProd(${p.id})">+</button></td>
+                <td><input class="edit" style="font-weight:bold" value="${p.nume}" onchange="upd(${p.id},'nume',this.value)"></td>
+                <td><input type="number" class="qty" value="${p.ambalaj}" onchange="upd(${p.id},'ambalaj',this.value)"></td>
+                <td align="center"><input type="number" class="qty" value="${p.cantitateInt}" onchange="upd(${p.id},'cantitateInt',this.value)"> <input type="number" class="qty" style="color:var(--accent)" value="${p.cantitateFrac}" onchange="upd(${p.id},'cantitateFrac',this.value)"></td>
+                <td><input class="edit" value="${p.dataExpirare}" oninput="formatDate(this,${p.id})"></td>
+                <td><button onclick="del(${p.id})" style="border:none;background:none;font-size:18px">🗑️</button></td>`;
+            } else {
+                const sistTot = (p.cantitateInt * p.ambalaj) + p.cantitateFrac;
+                const fapTot = ((p.fapticInt || 0) * p.ambalaj) + (p.fapticFrac || 0);
+                const d = fapTot - sistTot;
+                const dStr = d === 0 ? "0" : (d > 0 ? "+" : "-") + Math.floor(Math.abs(d)/p.ambalaj) + "+" + (Math.abs(d)%p.ambalaj);
+                tr.innerHTML = `<td><b>${p.nume}</b><br><small>Emb: ${p.ambalaj}</small></td><td align="center">${p.cantitateInt}+${p.cantitateFrac}</td>
+                <td align="center"><input type="number" class="qty" style="border-color:var(--inv-color)" value="${p.fapticInt||0}" onchange="upd(${p.id},'fapticInt',this.value)"> <input type="number" class="qty" style="border-color:var(--inv-color); color:blue" value="${p.fapticFrac||0}" onchange="upd(${p.id},'fapticFrac',this.value)"></td>
+                <td align="center"><span class="diff-tag ${d<0?'minus':(d>0?'plus':'')}">${dStr}</span></td>
+                <td><input class="edit" value="${p.dataExpirare}" oninput="formatDate(this,${p.id})"></td>`;
+            }
+            frag.appendChild(tr);
+        });
+        tbody.innerHTML = ""; tbody.appendChild(frag);
+    }
+
+    async function getSortedExportData() {
+        const data = await db.produse.toArray();
+        return data.sort((a, b) => {
+            const hasStockA = (a.cantitateInt + a.cantitateFrac + (a.fapticInt || 0) + (a.fapticFrac || 0)) > 0;
+            const hasStockB = (b.cantitateInt + b.cantitateFrac + (b.fapticInt || 0) + (b.fapticFrac || 0)) > 0;
+            if (hasStockA && !hasStockB) return -1;
+            if (!hasStockA && hasStockB) return 1;
+            return a.nume.localeCompare(b.nume);
+        });
+    }
+
+    async function exportExcel(n) {
+        const d = await getSortedExportData();
+        const expData = d.map(p => {
+            const sist = `${p.cantitateInt}+${p.cantitateFrac}`;
+            if (!isInventory) return { "Produs": p.nume, "Emb": p.ambalaj, "Stoc": sist, "Exp": p.dataExpirare };
+            const sistTot = (p.cantitateInt * p.ambalaj) + p.cantitateFrac;
+            const fapTot = ((p.fapticInt || 0) * p.ambalaj) + (p.fapticFrac || 0);
+            const diff = fapTot - sistTot;
+            const dStr = diff === 0 ? "0" : (diff > 0 ? "+" : "-") + Math.floor(Math.abs(diff)/p.ambalaj) + "+" + (Math.abs(diff)%p.ambalaj);
+            return { "Produs": p.nume, "Sistem": sist, "Raft": `${p.fapticInt||0}+${p.fapticFrac||0}`, "Dif": dStr, "Exp": p.dataExpirare };
+        });
+        const ws = XLSX.utils.json_to_sheet(expData); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Raport"); XLSX.writeFile(wb, `${n}.xlsx`);
+    }
+
+    async function exportPDF(t) {
+        const { jsPDF } = window.jspdf; const doc = new jsPDF(); const d = await getSortedExportData();
+        const head = isInventory ? [['Produs', 'Sist', 'Raft', 'Dif', 'Exp']] : [['Produs', 'Emb', 'Stoc', 'Exp']];
+        const body = d.map(p => {
+            const sist = `${p.cantitateInt}+${p.cantitateFrac}`;
+            if (!isInventory) return [p.nume, p.ambalaj, sist, p.dataExpirare];
+            const sistTot = (p.cantitateInt * p.ambalaj) + p.cantitateFrac;
+            const fapTot = ((p.fapticInt || 0) * p.ambalaj) + (p.fapticFrac || 0);
+            const diff = fapTot - sistTot;
+            const dStr = diff === 0 ? "0" : (diff > 0 ? "+" : "-") + Math.floor(Math.abs(diff)/p.ambalaj) + "+" + (Math.abs(diff)%p.ambalaj);
+            return [p.nume, sist, `${p.fapticInt||0}+${p.fapticFrac||0}`, dStr, p.dataExpirare];
+        });
+        doc.text(t, 14, 15); doc.autoTable({ head, body, startY: 20, theme: 'grid' }); doc.save(`${t}.pdf`);
+    }
+
+    async function addProd() { await db.produse.add({ nume: "Produs Nou", cantitateInt: 0, cantitateFrac: 0, ambalaj: 10, dataExpirare: "", fapticInt: 0, fapticFrac: 0, ordine: Date.now() }); render(); }
+    async function del(id) { if(confirm("Ștergi?")) { const p = await db.produse.get(id); undoAction = {type:'delete', data:p}; document.getElementById('undoBtn').style.display='flex'; await db.produse.delete(id); render(); } }
+    async function duplicaProd(id) { const p = await db.produse.get(id); const n = {...p}; delete n.id; n.ordine = Date.now(); await db.produse.add(n); render(); }
+    async function reseteazaFaptic() { if(confirm("Reset raft?")) { const d = await db.produse.toArray(); for(let p of d) await db.produse.update(p.id, { fapticInt: 0, fapticFrac: 0 }); render(); } }
+    async function resetTotalStoc() { if(confirm("Reset sistem?")) { const d = await db.produse.toArray(); for(let p of d) await db.produse.update(p.id, { cantitateInt: 0, cantitateFrac: 0 }); render(); } }
+    async function finalizeazaInventar() { if(confirm("Sincronizezi?")) { const d = await db.produse.toArray(); for(let p of d) await db.produse.update(p.id, { cantitateInt: p.fapticInt||0, cantitateFrac: p.fapticFrac||0, fapticInt:0, fapticFrac:0 }); toggleMode(); } }
+    async function importExcel(e) { const r = new FileReader(); r.onload = async (ev) => { const wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'}); const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]); if (confirm("Import nou?")) await db.produse.clear(); const batch = json.map(row => { const k = Object.keys(row); const f = (l) => row[k.find(x => l.some(w => x.toLowerCase().includes(w)))] || ""; let s = String(f(['stoc','cant']) || "0"), qi = 0, qf = 0; if(s.includes('+')) [qi,qf] = s.split('+').map(n => parseInt(n)||0); else qi = parseInt(s)||0; return { nume: String(f(['nume','prod']) || "Produs"), cantitateInt: qi, cantitateFrac: qf, ambalaj: parseInt(f(['amb'])) || 10, dataExpirare: String(f(['exp','data'])), fapticInt: 0, fapticFrac: 0, ordine: Date.now() }; }); await db.produse.bulkAdd(batch); render(); }; r.readAsArrayBuffer(e.target.files[0]); }
+    function doBackup() { db.produse.toArray().then(d => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(d)], {type:'application/json'})); a.download="Backup.json"; a.click(); }); }
+    async function restoreBackup(e) { const r = new FileReader(); r.onload = async (ev) => { const data = JSON.parse(ev.target.result); await db.produse.clear(); await db.produse.bulkAdd(data); render(); }; r.readAsText(e.target.files[0]); }
+
+    render();
+</script>
+</body>
+</html>
+
